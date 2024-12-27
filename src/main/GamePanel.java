@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import javax.imageio.ImageIO;
 import javax.sound.sampled.*;
 import javax.swing.JPanel;
+import java.sql.*;
 
 public class GamePanel extends JPanel implements Runnable{
     public static final int WIDTH = 1100;
@@ -53,6 +54,7 @@ public class GamePanel extends JPanel implements Runnable{
     Rectangle returnButton3 = new Rectangle(400, 450, 300, 70);
 
     Rectangle playButton = new Rectangle(450, 300, 200, 70);
+    Rectangle historyButton = new Rectangle(700, 300, 70, 70);
     Rectangle statsButton = new Rectangle(450, 400, 200, 70);
     Rectangle settingsButton = new Rectangle(700, 400,70,70);
     Rectangle exitButton = new Rectangle(450, 500, 200, 70);
@@ -62,6 +64,14 @@ public class GamePanel extends JPanel implements Runnable{
 
     Rectangle yesButton = new Rectangle(425, 350, 100, 70);
     Rectangle noButton = new Rectangle(575, 350, 100, 70);
+
+    Rectangle backButton = new Rectangle(450, 700, 200, 50);
+    Rectangle nextButton1 = new Rectangle(650,600,50,50);
+    Rectangle prevButton1 = new Rectangle(400,600,50,50);
+
+    Rectangle backButton2 = new Rectangle(900, 670, 110, 50);
+    Rectangle nextButton2 = new Rectangle(960,600,50,50);
+    Rectangle prevButton2 = new Rectangle(900,600,50,50);
 
     // stats
     int whiteScore = 0;
@@ -75,7 +85,7 @@ public class GamePanel extends JPanel implements Runnable{
     File saveFile = new File("save.txt");
 
     // game state
-    enum GameState {MENU, GAME, STATS, PAUSE, WARNING_RESET, SETTINGS}
+    enum GameState {MENU, GAME, STATS, PAUSE, WARNING_RESET, SETTINGS, HISTORY, WARNING_DELETE, REPLAY}
     GameState currentState = GameState.MENU;
 
     // sound effect
@@ -97,6 +107,26 @@ public class GamePanel extends JPanel implements Runnable{
     float bgmVolume = 0.0f;
     float sfxVolume = 0.0f;
 
+    // MySQL
+    private static final String DB_URL = "jdbc:mysql://127.0.0.1:3306/chess_java";
+    private static final String DB_USER = "root";
+    private static final String DB_PASSWORD = "";
+
+    // history
+    BufferedImage historyIcon;
+    BufferedImage nextIcon1;
+    BufferedImage prevIcon1;
+    private int currentPage = 0;
+    private final int ENTRIES_PER_PAGE = 10;
+    private ArrayList<String[]> historyData = new ArrayList<>();
+    private int selectedReplayIndex = -1;
+    private StringBuilder movesHistory = new StringBuilder();
+    private int turn = 1;
+
+    // replay
+    // TODO: replay stuff
+    private int turnNum = 1;
+
     public GamePanel() {
         pieceMoveSound = new SoundEffect("res/sfx/piece_move.wav");
         checkSound = new SoundEffect("res/sfx/check.wav");
@@ -116,6 +146,7 @@ public class GamePanel extends JPanel implements Runnable{
         addMouseListener(mouse);
 
         setPieces();
+//        testing();
         copyPieces(pieces, simPieces);
 
         loadGameData();
@@ -131,6 +162,24 @@ public class GamePanel extends JPanel implements Runnable{
         } catch (IOException e) {
             System.err.println("Error loading settings icon: " + e.getMessage());
         }
+
+        try {
+            historyIcon = ImageIO.read(new File("res/history.png"));
+        } catch (IOException e) {
+            System.err.println("Error loading history icon: " + e.getMessage());
+        }
+
+        try {
+            nextIcon1 = ImageIO.read(new File("res/next.png"));
+        } catch (IOException e) {
+            System.err.println("Error loading history icon: " + e.getMessage());
+        }
+
+        try {
+            prevIcon1 = ImageIO.read(new File("res/prev.png"));
+        } catch (IOException e) {
+            System.err.println("Error loading history icon: " + e.getMessage());
+        }
     }
 
     public void launchGame() {
@@ -142,7 +191,7 @@ public class GamePanel extends JPanel implements Runnable{
         }
     }
 
-    private void resetGame() {
+    void resetGame() {
         pieces.clear();
         setPieces();
         copyPieces(pieces, simPieces);
@@ -153,49 +202,92 @@ public class GamePanel extends JPanel implements Runnable{
         checkingP = null;
         promotion = false;
         scoreUpdated = false;
+        turn = 1;
+    }
+
+    private Connection connectToDatabase() {
+        try {
+            return DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+        } catch (SQLException e) {
+            System.err.println("Database connection failed: " + e.getMessage());
+            return null;
+        }
     }
 
     private void saveGameData() {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(saveFile))) {
-            writer.write(blackScore + "\n");
-            writer.write(whiteScore + "\n");
-            writer.write(stalemateCount + "\n");
-            writer.write(totalPlaytime + "\n");
-            writer.write(bgmVolume + "\n");
-            writer.write(sfxVolume + "\n");
-        } catch (IOException e) {
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sql = """
+                    REPLACE INTO game_data (id, black_score, white_score, stalemate_count, total_playtime, bgm_volume, sfx_volume)
+                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                    """;
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setInt(1, blackScore);
+                    pstmt.setInt(2, whiteScore);
+                    pstmt.setInt(3, stalemateCount);
+                    pstmt.setLong(4, totalPlaytime);
+                    pstmt.setFloat(5, bgmVolume);
+                    pstmt.setFloat(6, sfxVolume);
+                    pstmt.executeUpdate();
+                }
+            }
+        } catch (SQLException e) {
             System.err.println("Error saving game data: " + e.getMessage());
         }
     }
 
     private void loadGameData() {
-        if (saveFile.exists()) {
-            try (BufferedReader reader = new BufferedReader(new FileReader(saveFile))) {
-                blackScore = Integer.parseInt(reader.readLine());
-                whiteScore = Integer.parseInt(reader.readLine());
-                stalemateCount = Integer.parseInt(reader.readLine());
-                totalPlaytime = Long.parseLong(reader.readLine());
-                bgmVolume = Float.parseFloat(reader.readLine());
-                sfxVolume = Float.parseFloat(reader.readLine());
-                pieceMoveSound.setVolume(sfxVolume);
-                checkSound.setVolume(sfxVolume);
-                castleSound.setVolume(sfxVolume);
-                promoteSound.setVolume(sfxVolume);
-                buttonSound.setVolume(sfxVolume);
-            } catch (IOException | NumberFormatException e) {
-                System.err.println("Error loading game data: " + e.getMessage());
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sql = "SELECT * FROM game_data WHERE id = 1";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql);
+                     ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        blackScore = rs.getInt("black_score");
+                        whiteScore = rs.getInt("white_score");
+                        stalemateCount = rs.getInt("stalemate_count");
+                        totalPlaytime = rs.getLong("total_playtime");
+                        bgmVolume = rs.getFloat("bgm_volume");
+                        sfxVolume = rs.getFloat("sfx_volume");
+
+                        setVolume(menuMusic, bgmVolume);
+                        setVolume(gameMusic, bgmVolume);
+                        setVolume(checkMusic, bgmVolume);
+                        setVolume(winMusic, bgmVolume);
+                        setVolume(stalemateMusic, bgmVolume);
+                        pieceMoveSound.setVolume(sfxVolume);
+                        checkSound.setVolume(sfxVolume);
+                        castleSound.setVolume(sfxVolume);
+                        promoteSound.setVolume(sfxVolume);
+                        buttonSound.setVolume(sfxVolume);
+                    }
+                }
             }
+        } catch (SQLException e) {
+            System.err.println("Error loading game data: " + e.getMessage());
         }
     }
 
     private void resetSaveFile() {
-        whiteScore = 0;
         blackScore = 0;
+        whiteScore = 0;
         stalemateCount = 0;
         totalPlaytime = 0;
 
-        if(saveFile.exists()) {
-            saveFile.delete();
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sql = """
+                UPDATE game_data
+                SET black_score = 0, white_score = 0, stalemate_count = 0, total_playtime = 0, 
+                    bgm_volume = 0.0, sfx_volume = 0.0
+                WHERE id = 1
+                """;
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.executeUpdate();
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error resetting game data: " + e.getMessage());
         }
     }
 
@@ -221,9 +313,92 @@ public class GamePanel extends JPanel implements Runnable{
     private void setVolume(Clip clip, float volume) {
         if (clip != null && clip.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
             FloatControl gainControl = (FloatControl) clip.getControl(FloatControl.Type.MASTER_GAIN);
-            float dB = Math.max(-80.0f, Math.min(6.0f, volume - 80)); // Clamp volume between -80 dB and 6 dB
+            float dB = Math.max(-80.0f, Math.min(6.0f, volume - 80));
             gainControl.setValue(dB);
         }
+    }
+
+    private void loadGameHistory() {
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sqlCount = "SELECT COUNT(*) AS total FROM game_history";
+                try (PreparedStatement pstmtCount = conn.prepareStatement(sqlCount);
+                     ResultSet rsCount = pstmtCount.executeQuery()) {
+                    if (rsCount.next()) {
+                        int totalEntries = rsCount.getInt("total");
+                        int totalPages = (int) Math.ceil((double) totalEntries / ENTRIES_PER_PAGE);
+                        if (currentPage >= totalPages) currentPage = totalPages - 1;
+                    }
+                }
+
+                String sql = "SELECT * FROM game_history ORDER BY game_date DESC LIMIT ?, ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setInt(1, currentPage * ENTRIES_PER_PAGE);
+                    pstmt.setInt(2, ENTRIES_PER_PAGE);
+                    ResultSet rs = pstmt.executeQuery();
+                    historyData.clear();
+                    while (rs.next()) {
+                        String[] entry = new String[] {
+                                rs.getString("game_date"),
+                                rs.getString("result"),
+                                rs.getString("historyID")
+                        };
+                        historyData.add(entry);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error loading game history: " + e.getMessage());
+        }
+    }
+
+    private void saveGameResult(String result) {
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sql = "INSERT INTO game_history (game_date, result, moves) VALUES (NOW(), ?, ?)";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setString(1, result); // Win, Lose, or Stalemate
+                    pstmt.setString(2, movesHistory.toString().trim()); // Moves
+                    pstmt.executeUpdate();
+                    System.out.println("Game result saved to database.");
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error saving game result: " + e.getMessage());
+        }
+    }
+
+    private void deleteReplay(int index) {
+        if (index < 0 || index >= historyData.size()) return;
+
+        // Get the replay ID (or unique identifier) from historyData
+        String replayId = historyData.get(index)[2]; // Assuming historyID is at index 2
+
+        // Remove replay from the database
+        try (Connection conn = connectToDatabase()) {
+            if (conn != null) {
+                String sql = "DELETE FROM game_history WHERE historyID = ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setString(1, replayId);
+                    pstmt.executeUpdate();
+                    System.out.println("Replay deleted from database.");
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error deleting replay: " + e.getMessage());
+        }
+
+        // Remove replay from the local list
+        historyData.remove(index);
+
+        // Refresh UI
+        loadGameHistory();
+    }
+
+    public void testing() {
+        pieces.add(new Queen(WHITE, 2, 0));
+        pieces.add(new King(BLACK, 0, 4));
+        pieces.add(new King(WHITE, 2, 5));
     }
 
     public void setPieces() {
@@ -307,16 +482,105 @@ public class GamePanel extends JPanel implements Runnable{
                     gameMusic.loop(Clip.LOOP_CONTINUOUSLY);
                     gameMusic.start();
                 }
+            } else if (historyButton.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                currentState = GameState.HISTORY;
+                currentPage = 0;
+                loadGameHistory();
             } else if(statsButton.contains(mouse.x, mouse.y)) {
                 buttonSound.play();
                 currentState = GameState.STATS;
             } else if (settingsButton.contains(mouse.x, mouse.y)) {
                 buttonSound.play();
-                currentState = GameState.SETTINGS; // Open settings menu
+                currentState = GameState.SETTINGS;
             }
             else if(exitButton.contains(mouse.x, mouse.y)) {
                 buttonSound.play();
                 System.exit(0);
+            }
+            mouse.pressed = false;
+        } else if (currentState == GameState.HISTORY && mouse.pressed) {
+            if(backButton.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                currentState = GameState.MENU;
+            }
+            if(nextButton1.contains(mouse.x,mouse.y) && historyData.size() == ENTRIES_PER_PAGE) {
+                buttonSound.play();
+                currentPage++;
+                loadGameHistory();
+            }
+            if(prevButton1.contains(mouse.x,mouse.y) && currentPage > 0) {
+                buttonSound.play();
+                currentPage--;
+                loadGameHistory();
+            }
+            int yOffset = 150;
+            for (int i = 0; i < historyData.size(); i++) {
+                Rectangle replayButton = new Rectangle(800, yOffset - 20, 100, 30);
+                Rectangle deleteButton = new Rectangle(910, yOffset - 20, 100, 30);
+                if (replayButton.contains(mouse.x, mouse.y)) {
+                    buttonSound.play();
+                    currentState = GameState.REPLAY;
+                    stopMusic(menuMusic);
+                    if(gameMusic != null) {
+                        gameMusic.loop(Clip.LOOP_CONTINUOUSLY);
+                        gameMusic.start();
+                    }
+                    // TODO Replay button feature
+                    break;
+                }
+                if (deleteButton.contains(mouse.x, mouse.y)) {
+                    buttonSound.play();
+                    currentState = GameState.WARNING_DELETE;
+                    selectedReplayIndex = i;
+                    break;
+                }
+                yOffset += 40;
+            }
+            mouse.pressed = false;
+        } else if (currentState == GameState.REPLAY && mouse.pressed) {
+            if (nextButton2.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                // TODO: next move
+                if(currentColor == 0) {
+                    currentColor = 1;
+                } else if(currentColor == 1) {
+                    turnNum++;
+                    currentColor = 0;
+                }
+            }
+            if (prevButton2.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                // TODO: prev move
+                if(currentColor == 0 && turnNum != 1) {
+                    turnNum--;
+                    currentColor = 1;
+                } else if(currentColor == 1) {
+                    currentColor = 0;
+                }
+            }
+            if (backButton2.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                stopMusic(gameMusic);
+                stopMusic(checkMusic);
+                stopMusic(winMusic);
+                stopMusic(stalemateMusic);
+                if(menuMusic != null) {
+                    menuMusic.loop(Clip.LOOP_CONTINUOUSLY);
+                    menuMusic.start();
+                }
+                currentState = GameState.HISTORY;
+            }
+            mouse.pressed = false;
+        } else if (currentState == GameState.WARNING_DELETE && mouse.pressed) {
+            if (yesButton.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                deleteReplay(selectedReplayIndex);
+                currentState = GameState.HISTORY;
+            }
+            if (noButton.contains(mouse.x, mouse.y)) {
+                buttonSound.play();
+                currentState = GameState.HISTORY;
             }
             mouse.pressed = false;
         } else if(currentState == GameState.STATS && mouse.pressed) {
@@ -334,7 +598,6 @@ public class GamePanel extends JPanel implements Runnable{
             Rectangle sfxSlider = new Rectangle(300, 320, 300, 20);
             if (bgmSlider.contains(mouse.x, mouse.y)) {
                 buttonSound.play();
-                // bgm
                 bgmVolume = (mouse.x - 300) / 3.0f;
                 setVolume(menuMusic, bgmVolume);
                 setVolume(gameMusic, bgmVolume);
@@ -343,7 +606,6 @@ public class GamePanel extends JPanel implements Runnable{
                 setVolume(stalemateMusic, bgmVolume);
             } else if (sfxSlider.contains(mouse.x, mouse.y)) {
                 buttonSound.play();
-                // sfx
                 sfxVolume = (mouse.x - 300) / 3.0f;
                 pieceMoveSound.setVolume(sfxVolume);
                 checkSound.setVolume(sfxVolume);
@@ -408,7 +670,6 @@ public class GamePanel extends JPanel implements Runnable{
                 currentState = GameState.PAUSE;
             }
 
-            // Replay and return to menu
             if((gameOver || stalemate) && mouse.pressed) {
                 totalPlaytime += System.currentTimeMillis() - startTime;
                 saveGameData();
@@ -472,9 +733,50 @@ public class GamePanel extends JPanel implements Runnable{
                                 checkSound.play();
                             }
 
+                            StringBuilder moveBuilder = new StringBuilder();
+                            if (currentColor == WHITE) {
+                                moveBuilder.append(turn).append(". ");
+                            }
+
                             if(castlingP != null) {
+                                if (castlingP.col == 5) {
+                                    // King side castling
+                                    moveBuilder.append("O-O");
+                                } else if (castlingP.col == 3){
+                                    // Queen side castling
+                                    moveBuilder.append("O-O-O");
+                                }
                                 castleSound.play();
                                 castlingP.updatePosition();
+                            } else {
+                                if (activeP.type != Type.PAWN) {
+                                    switch (activeP.type) {
+                                        case QUEEN -> moveBuilder.append("Q");
+                                        case ROOK -> moveBuilder.append("R");
+                                        case KNIGHT -> moveBuilder.append("N");
+                                        case BISHOP -> moveBuilder.append("B");
+                                        case KING -> moveBuilder.append("K");
+                                    }
+                                }
+                                boolean isCapture = activeP.hittingP != null;
+                                if (activeP.hittingP != null && activeP.hittingP.type == Type.KING) {
+                                    isCapture = false;
+                                }
+                                if (isCapture && activeP.type == Type.PAWN) {
+                                    moveBuilder.append((char) ('a' + activeP.preCol));
+                                }
+                                if (isCapture) {
+                                    moveBuilder.append("x");
+                                }
+                                moveBuilder.append((char) ('a' + activeP.col));
+                                moveBuilder.append(8 - activeP.row);
+                                if (inCheck(activeP)) {
+                                    if (isCheckmate()) {
+                                        moveBuilder.append("#");
+                                    } else {
+                                        moveBuilder.append("+");
+                                    }
+                                }
                             }
 
                             if(!inCheck(activeP)) {
@@ -493,11 +795,16 @@ public class GamePanel extends JPanel implements Runnable{
                                     if (currentColor == BLACK) {
                                         currentWhiteScore++;
                                         whiteScore++;
+                                        movesHistory.append(moveBuilder);
+                                        saveGameResult("White Wins");
                                     } else {
                                         currentBlackScore++;
                                         blackScore++;
+                                        saveGameResult("Black Wins");
                                     }
                                     scoreUpdated = true;
+                                    movesHistory.append(moveBuilder);
+                                    movesHistory.setLength(0);
                                 }
                                 stopMusic(gameMusic);
                                 stopMusic(checkMusic);
@@ -511,6 +818,9 @@ public class GamePanel extends JPanel implements Runnable{
                                     currentStalemateCount++;
                                     stalemateCount++;
                                     scoreUpdated = true;
+                                    saveGameResult("Stalemate");
+                                    movesHistory.append(moveBuilder);
+                                    movesHistory.setLength(0);
                                 }
                                 stopMusic(gameMusic);
                                 stopMusic(checkMusic);
@@ -522,9 +832,11 @@ public class GamePanel extends JPanel implements Runnable{
                                     promotion = true;
                                 } else {
                                     pieceMoveSound.play();
+                                    movesHistory.append(moveBuilder).append(" ");
                                     changePlayer();
                                 }
                             }
+
                         } else {
                             // reset due to invalid move
                             copyPieces(pieces, simPieces);
@@ -561,7 +873,13 @@ public class GamePanel extends JPanel implements Runnable{
         if(activeP.canMove(activeP.col, activeP.row)) {
             canMove = true;
 
-            // capture validation
+            for (Piece piece : simPieces) {
+                if (piece.color != activeP.color && piece.col == activeP.col && piece.row == activeP.row) {
+                    activeP.hittingP = piece;
+                    break;
+                }
+            }
+
             if(activeP.hittingP != null) {
                 simPieces.remove(activeP.hittingP.getIndex());
             }
@@ -815,6 +1133,7 @@ public class GamePanel extends JPanel implements Runnable{
                 }
             }
         } else {
+            turn++;
             currentColor = WHITE;
             // reset white two stepped status
             for(Piece piece : pieces) {
@@ -899,6 +1218,9 @@ public class GamePanel extends JPanel implements Runnable{
             if (settingsIcon != null) {
                 g2.drawImage(settingsIcon, settingsButton.x, settingsButton.y, settingsButton.width, settingsButton.height, null);
             }
+            if (historyIcon != null) {
+                g2.drawImage(historyIcon, historyButton.x, historyButton.y, historyButton.width, historyButton.height, null);
+            }
 
             g2.setFont(new Font("Arial", Font.BOLD, 90));
             g2.setColor(Color.yellow);
@@ -964,9 +1286,9 @@ public class GamePanel extends JPanel implements Runnable{
 
                 g2.setFont(new Font("Palatino Linotype", Font.PLAIN, 40));
                 g2.setColor(Color.white);
-                g2.drawString("Scores:", 840, 330);
-                g2.drawString("Black: " + currentBlackScore, 840, 380);
-                g2.drawString("White: " + currentWhiteScore, 840, 430);
+                g2.drawString("Turn: " + turn, 840, 330);
+                g2.drawString("Black win: " + currentBlackScore, 840, 380);
+                g2.drawString("White win: " + currentWhiteScore, 840, 430);
                 g2.drawString("Stalemates: " + currentStalemateCount, 840, 480);
             }
 
@@ -1025,9 +1347,9 @@ public class GamePanel extends JPanel implements Runnable{
 
                 g2.setFont(new Font("Palatino Linotype", Font.PLAIN, 40));
                 g2.setColor(Color.white);
-                g2.drawString("Scores:", 840, 330);
-                g2.drawString("Black: " + currentBlackScore, 840, 380);
-                g2.drawString("White: " + currentWhiteScore, 840, 430);
+                g2.drawString("Turn: " + turn, 840, 330);
+                g2.drawString("Black win: " + currentBlackScore, 840, 380);
+                g2.drawString("White win: " + currentWhiteScore, 840, 430);
                 g2.drawString("Stalemates: " + currentStalemateCount, 840, 480);
             }
 
@@ -1085,8 +1407,10 @@ public class GamePanel extends JPanel implements Runnable{
         } else if(currentState == GameState.WARNING_RESET) {
             g2.setFont(new Font("Arial", Font.BOLD, 50));
             g2.setColor(Color.red);
-            g2.drawString("Are you sure?", 400, 300);
-            g2.setFont(new Font("Arial", Font.PLAIN, 40));
+            g2.drawString("Confirm Reset", 400, 200);
+
+            g2.setFont(new Font("Arial", Font.PLAIN, 30));
+            g2.drawString("Are you sure you want to delete your data?", 300, 300);
 
             g2.drawString("Yes", yesButton.x + 15, yesButton.y + 50);
             g2.drawRect(yesButton.x, yesButton.y, yesButton.width, yesButton.height);
@@ -1110,6 +1434,74 @@ public class GamePanel extends JPanel implements Runnable{
 
             g2.drawString("Back", returnButton2.x + 40, returnButton2.y + 45);
             g2.drawRect(returnButton2.x, returnButton2.y, returnButton2.width, returnButton2.height);
+        } else if (currentState == GameState.HISTORY) {
+            g2.setFont(new Font("Arial", Font.BOLD, 60));
+            g2.setColor(Color.white);
+            g2.drawString("Game History", 380, 100);
+
+            g2.setFont(new Font("Arial", Font.PLAIN, 20));
+
+            int yOffset = 150;
+            for (int i = 0; i < historyData.size(); i++) {
+                String[] entry = historyData.get(i);
+                g2.drawString((currentPage * ENTRIES_PER_PAGE + i + 1) + ". " + entry[0] + " - " + entry[1], 100, yOffset);
+
+                Rectangle replayButton = new Rectangle(800, yOffset - 20, 100, 30);
+                g2.drawRect(replayButton.x, replayButton.y, replayButton.width, replayButton.height);
+                g2.drawString("Replay", replayButton.x + 10, replayButton.y + 20);
+
+                Rectangle deleteButton = new Rectangle(910, yOffset - 20, 100, 30);
+                g2.drawRect(deleteButton.x, deleteButton.y, deleteButton.width, deleteButton.height);
+                g2.drawString("Delete", deleteButton.x + 10, deleteButton.y + 20);
+                yOffset += 40;
+            }
+
+            if (nextIcon1 != null && historyData.size() == ENTRIES_PER_PAGE) {
+                g2.drawImage(nextIcon1, nextButton1.x, nextButton1.y, nextButton1.width, nextButton1.height, null);
+            }
+            if (prevIcon1 != null && currentPage > 0) {
+                g2.drawImage(prevIcon1, prevButton1.x, prevButton1.y, prevButton1.width, prevButton1.height, null);
+            }
+
+            g2.drawString("Page: " + (currentPage + 1), 510, 625);
+            g2.drawRect(backButton.x, backButton.y, backButton.width, backButton.height);
+            g2.drawString("Back", backButton.x + 80, backButton.y + 35);
+        } else if (currentState == GameState.WARNING_DELETE) {
+            g2.setFont(new Font("Arial", Font.BOLD, 50));
+            g2.setColor(Color.red);
+            g2.drawString("Confirm Deletion", 400, 200);
+
+            g2.setFont(new Font("Arial", Font.PLAIN, 30));
+            g2.drawString("Are you sure you want to delete this replay?", 300, 300);
+
+            g2.drawString("Yes", yesButton.x + 15, yesButton.y + 50);
+            g2.drawRect(yesButton.x, yesButton.y, yesButton.width, yesButton.height);
+
+            g2.setColor(Color.white);
+            g2.drawString("No", noButton.x + 25, noButton.y + 50);
+            g2.drawRect(noButton.x, noButton.y, noButton.width, noButton.height);
+        } else if (currentState == GameState.REPLAY) {
+            board.draw(g2);
+
+            for(Piece p : simPieces) {
+                p.draw(g2);
+            }
+
+            g2.setFont(new Font("Palatino Linotype", Font.PLAIN, 40));
+            g2.setColor(Color.white);
+            g2.drawString("Turn: " + turnNum, 850, 400);
+            g2.drawString("Color: " + (currentColor == 0 ? "White" : "Black"), 850, 450);
+
+            if (nextIcon1 != null) {
+                g2.drawImage(nextIcon1, nextButton2.x, nextButton2.y, nextButton2.width, nextButton2.height, null);
+            }
+            if (prevIcon1 != null && turnNum != 1 || currentColor != 0) {
+                g2.drawImage(prevIcon1, prevButton2.x, prevButton2.y, prevButton2.width, prevButton2.height, null);
+            }
+
+            g2.setFont(new Font("Arial", Font.PLAIN, 20));
+            g2.drawRect(backButton2.x, backButton2.y, backButton2.width, backButton2.height);
+            g2.drawString("Back", backButton2.x + 35, backButton2.y + 35);
         }
     }
 }
